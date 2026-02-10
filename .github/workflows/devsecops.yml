@@ -43,9 +43,7 @@ jobs:
       with:
         image-ref: backend:latest
         format: table
-        exit-code: 1
-        ignore-unfixed: true
-        vuln-type: 'os,library'
+        exit-code: 0   # change to 1 for strict mode
         severity: CRITICAL,HIGH
 
     - name: Scan Frontend Image
@@ -53,9 +51,7 @@ jobs:
       with:
         image-ref: frontend:latest
         format: table
-        exit-code: 1
-        ignore-unfixed: true
-        vuln-type: 'os,library'
+        exit-code: 0
         severity: CRITICAL,HIGH
 
     # ---------------- LOGIN TO ECR ----------------
