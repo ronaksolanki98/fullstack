@@ -1,105 +1,119 @@
-name: Fullstack DevSecOps Pipeline
+steps:
 
-on:
-  push:
-    branches: [ main ]
+# -----------------------------
+# Checkout
+# -----------------------------
+- name: Checkout Code
+  uses: actions/checkout@v4
 
-permissions:
-  id-token: write
-  contents: read
+# -----------------------------
+# SonarCloud Scan
+# -----------------------------
+- name: SonarCloud Scan
+  uses: SonarSource/sonarcloud-github-action@v2
+  env:
+    SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  with:
+    args: >
+      -Dsonar.projectKey=ronaksolanki98_fullstack
+      -Dsonar.organization=ronaksolanki98
 
-jobs:
-  pipeline:
-    runs-on: ubuntu-latest
+# -----------------------------
+# Quality Gate
+# -----------------------------
+- name: Sonar Quality Gate
+  uses: SonarSource/sonarqube-quality-gate-action@master
+  timeout-minutes: 5
+  env:
+    SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-    steps:
+# -----------------------------
+# AWS OIDC Auth
+# -----------------------------
+- name: Configure AWS Credentials
+  uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: arn:aws:iam::216989134640:role/github-oidc-role
+    aws-region: ${{ env.AWS_REGION }}
 
-    - name: Checkout Code
-      uses: actions/checkout@v3
+# -----------------------------
+# Login to ECR
+# -----------------------------
+- name: Login to Amazon ECR
+  uses: aws-actions/amazon-ecr-login@v2
 
-    # ---------------- OIDC AUTH ----------------
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: eu-north-1
+# -----------------------------
+# Build Backend Image
+# -----------------------------
+- name: Build Backend Image
+  run: |
+    docker build -t $ECR_BACKEND ./backend
+    docker tag $ECR_BACKEND:latest \
+    216989134640.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_BACKEND:latest
 
-    # ---------------- SONARCLOUD SCAN ----------------
-    - name: SonarCloud Scan
-      uses: SonarSource/sonarcloud-github-action@v2
-      env:
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+# -----------------------------
+# Build Frontend Image
+# -----------------------------
+- name: Build Frontend Image
+  run: |
+    docker build -t $ECR_FRONTEND ./frontend
+    docker tag $ECR_FRONTEND:latest \
+    216989134640.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_FRONTEND:latest
 
-    # ---------------- DOCKER BUILD ----------------
-    - name: Build Backend Image
-      run: docker build -t backend ./backend
+# -----------------------------
+# Trivy Scan Backend
+# -----------------------------
+- name: Scan Backend Image
+  uses: aquasecurity/trivy-action@master
+  with:
+    image-ref: ${{ env.ECR_BACKEND }}
+    format: table
+    exit-code: 0
+    severity: CRITICAL,HIGH
 
-    - name: Build Frontend Image
-      run: docker build -t frontend ./frontend
+# -----------------------------
+# Trivy Scan Frontend
+# -----------------------------
+- name: Scan Frontend Image
+  uses: aquasecurity/trivy-action@master
+  with:
+    image-ref: ${{ env.ECR_FRONTEND }}
+    format: table
+    exit-code: 0
+    severity: CRITICAL,HIGH
 
-    # ---------------- TRIVY IMAGE SCAN ----------------
-    - name: Scan Backend Image
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: ${{ env.BACKEND_IMAGE }}
-        format: table
-        exit-code: 0
+# -----------------------------
+# Push Images to ECR
+# -----------------------------
+- name: Push Backend Image
+  run: |
+    docker push \
+    216989134640.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_BACKEND:latest
 
-    - name: Scan Frontend Image
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: frontend
-        format: table
-        exit-code: 1
-        severity: CRITICAL,HIGH
+- name: Push Frontend Image
+  run: |
+    docker push \
+    216989134640.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_FRONTEND:latest
 
-    # ---------------- LOGIN TO ECR ----------------
-    - name: Login to ECR
-      run: |
-        aws ecr get-login-password --region eu-north-1 \
-        | docker login --username AWS \
-        --password-stdin 216989134640.dkr.ecr.eu-north-1.amazonaws.com
+# -----------------------------
+# Deploy to EC2
+# -----------------------------
+- name: Deploy on EC2
+  uses: appleboy/ssh-action@v1.0.0
+  with:
+    host: ${{ secrets.EC2_HOST }}
+    username: ubuntu
+    key: ${{ secrets.EC2_SSH_KEY }}
+    script: |
+      cd /home/ubuntu/fullstack
+      docker compose down
+      docker compose pull
+      docker compose up -d
 
-    # ---------------- PUSH IMAGES ----------------
-    - name: Push Backend
-      run: |
-        docker tag backend:latest 216989134640.dkr.ecr.eu-north-1.amazonaws.com/backend:latest
-        docker push 216989134640.dkr.ecr.eu-north-1.amazonaws.com/backend:latest
-
-    - name: Push Frontend
-      run: |
-        docker tag frontend:latest 216989134640.dkr.ecr.eu-north-1.amazonaws.com/frontend:latest
-        docker push 216989134640.dkr.ecr.eu-north-1.amazonaws.com/frontend:latest
-
-    # ---------------- DEPLOY TO EC2 ----------------
-    - name: Deploy via Docker Compose
-      uses: appleboy/ssh-action@v1.0.0
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ubuntu
-        key: ${{ secrets.EC2_SSH_KEY }}
-        script: |
-
-          aws ecr get-login-password --region eu-north-1 \
-          | docker login --username AWS \
-            --password-stdin 216989134640.dkr.ecr.eu-north-1.amazonaws.com
-
-          docker pull 216989134640.dkr.ecr.eu-north-1.amazonaws.com/backend:latest
-          docker pull 216989134640.dkr.ecr.eu-north-1.amazonaws.com/frontend:latest
-
-          docker stop backend || true
-          docker rm backend || true
-          docker stop frontend || true
-          docker rm frontend || true
-
-          docker run -d -p 5000:5000 --name backend \
-          216989134640.dkr.ecr.eu-north-1.amazonaws.com/backend:latest
-
-          docker run -d -p 3000:5173 --name frontend \
-          216989134640.dkr.ecr.eu-north-1.amazonaws.com/frontend:latest
-
-    # ---------------- RUNTIME TRIVY ----------------
-    - name: Runtime Trivy Scan
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: 216989134640.dkr.ecr.eu-north-1.amazonaws.com/backend:latest
+# -----------------------------
+# Runtime Trivy Scan
+# -----------------------------
+- name: Runtime Trivy Scan
+  run: |
+    docker run --rm aquasec/trivy image \
+    216989134640.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_BACKEND:lates
