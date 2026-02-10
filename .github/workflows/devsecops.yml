@@ -1,0 +1,68 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    # ---------- CHECKOUT ----------
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    # ---------- OIDC AUTH ----------
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: eu-north-1
+
+    # ---------- SONARCLOUD ----------
+    - name: SonarCloud Scan
+      uses: SonarSource/sonarcloud-github-action@v2
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+    # ---------- BUILD IMAGES ----------
+    - name: Build Backend Image
+      run: docker build -t backend ./backend
+
+    - name: Build Frontend Image
+      run: docker build -t frontend ./frontend
+
+    # ---------- TRIVY SCAN ----------
+    - name: Scan Backend Image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: backend
+
+    - name: Scan Frontend Image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: frontend
+
+    # ---------- LOGIN TO ECR ----------
+    - name: Login to ECR
+      run: |
+        aws ecr get-login-password --region eu-north-1 \
+        | docker login --username AWS \
+        --password-stdin 216989134640.dkr.ecr.eu-north-1.amazonaws.com
+
+    # ---------- PUSH ----------
+    - name: Push Backend
+      run: |
+        docker tag backend:latest 216989134640.dkr.ecr.eu-north-1.amazonaws.com/backend:latest
+        docker push 216989134640.dkr.ecr.eu-north-1.amazonaws.com/backend:latest
+
+    - name: Push Frontend
+      run: |
+        docker tag frontend:latest 216989134640.dkr.ecr.eu-north-1.amazonaws.com/frontend:latest
+        docker push 216989134640.dkr.ecr.eu-north-1.amazonaws.com/frontend:latest
